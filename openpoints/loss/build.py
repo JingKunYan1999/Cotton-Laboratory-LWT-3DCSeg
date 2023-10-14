@@ -224,11 +224,13 @@ class Poly1FocalLoss(torch.nn.Module):
             # if labels are of shape [N]
             # convert to one-hot tensor of shape [N, num_classes]
             if labels.ndim == 1:
+
                 labels = F.one_hot(labels, num_classes=num_classes)
 
             # if labels are of shape [N, ...] e.g. segmentation task
             # convert to one-hot tensor of shape [N, num_classes, ...]
             else:
+
                 labels = F.one_hot(labels.unsqueeze(1), num_classes).transpose(1, -1).squeeze_(-1)
 
         labels = labels.to(device=logits.device, dtype=logits.dtype)

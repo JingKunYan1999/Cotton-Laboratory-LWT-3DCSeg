@@ -1,6 +1,7 @@
 # subsample layer for 3d processing.
 from abc import ABC, abstractmethod
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.autograd import Function
@@ -151,9 +152,28 @@ def fps(data, number):
         number int
     '''
     fps_idx = furthest_point_sample(data[:, :, :3].contiguous(), number)
+    #print(len(np.unique(fps_idx.cpu().numpy())))
+    #print(fps_idx.shape)
     fps_data = torch.gather(
         data, 1, fps_idx.unsqueeze(-1).long().expand(-1, -1, data.shape[-1]))
     return fps_data
+
+
+def myfps(posdata,data,data1,number):
+    '''
+        data B N C
+        number int
+    '''
+    fps_idx = furthest_point_sample(posdata.contiguous(), number)
+
+    data = torch.gather(
+        data, 1, fps_idx.unsqueeze(-1).long().expand(-1, -1, data.shape[-1]))
+
+    data1 = torch.gather(
+        data1, 1, fps_idx.unsqueeze(-1).long().expand(-1, -1, data1.shape[-1]))
+
+
+    return data,data1
 
 
 if __name__ == '__main__':

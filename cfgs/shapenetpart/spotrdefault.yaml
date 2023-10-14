@@ -1,0 +1,101 @@
+dataset:
+  common:
+    NAME: ShapeNetPartNormal
+    data_root: D:/pythonproject/Pointnext/data/ShapeNetPart/useddatasetxyz
+    use_normal: True
+    num_points: 2048
+  train:
+    split: train
+  val:
+    split: val
+    presample: False
+  test:
+    split: test
+    presample: False
+
+num_classes: 3
+shape_classes: 1
+num_points: 2048
+normal_channel: True
+
+model:
+  NAME: BaseSeg
+  encoder_args:
+    NAME: SPoTrEncoder
+    blocks: [1, 5, 5, 5, 5]
+    strides: [1, 4, 4, 4, 4]
+    width: 64
+    in_channels: 7
+    expansion: 4
+    radius: 0.1
+    nsample: 32
+    gamma: 16
+    num_gp: 16
+    tau: 0.5
+    task: 'seg'
+    aggr_args:
+      feature_type: 'dp_df'
+      reduction: 'max'
+    group_args:
+      NAME: 'ballquery'
+      normalize_dp: True
+    conv_args:
+      order: conv-norm-act
+    act_args:
+      act: 'relu'
+    norm_args:
+      norm: 'bn'
+  decoder_args:
+    NAME: SPoTrDecoder
+  cls_args:
+    NAME: SegHead
+    num_classes: 3
+    in_channels: null
+    norm_args:
+      norm: 'bn'
+
+class_weights: null
+criterion_args:
+  NAME: CrossEntropy
+  label_smoothing: 0.0
+
+# training receipe borrowed from: https://github.com/yanx27/Pointnet_Pointnet2_pytorch
+# lr_scheduler:
+epochs: 100
+sched: 'step'
+decay_epochs: 10
+decay_rate: 0.7
+sched_on_epoch: True
+warmup_epochs: 0
+min_lr: 0
+
+# Training parameters
+batch_size: 4
+lr: 0.002
+optimizer:
+ NAME: 'adam'
+ weight_decay: 1.0e-4
+ betas: [0.9, 0.999]
+ eps: 1.0e-8
+ momentum: 0.98
+
+grad_norm_clip: 10
+
+
+# data augmentation from
+# https://github.com/yanx27/Pointnet_Pointnet2_pytorch/blob/e365b9f7b9c3d7d6444278d92e298e3f078794e1/train_semseg.py#L184
+datatransforms:
+  train: [PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize,PointCloudJitter,ChromaticDropGPU] #[PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize,PointCloudJitter,ChromaticDropGPU] #[PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize] #[PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize,PointCloudJitter,ChromaticDropGPU] #[PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize] #[PointsToTensor, PointCloudCenterAndNormalize] #[PointsToTensor, PointCloudScaling,PointCloudCenterAndNormalize,PointCloudJitter,ChromaticDropGPU]     # [PointsToTensor, PointCloudCenterAndNormalize]  #
+  val: [PointsToTensor, PointCloudCenterAndNormalize]
+  vote: [PointCloudScaling]
+  kwargs:
+    jitter_sigma: 0.001
+    jitter_clip: 0.005
+    scale: [0.8, 1.2]
+    gravity_dim: 1
+    angle: [0, 1.0, 0]
+
+
+feature_keys: pos,x,heights
+
+

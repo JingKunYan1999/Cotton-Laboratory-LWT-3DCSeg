@@ -33,7 +33,16 @@ from openpoints.utils import set_random_seed, save_checkpoint, load_checkpoint, 
     cal_model_parm_nums, Wandb, generate_exp_directory, resume_exp_directory, EasyConfig, dist_utils, find_free_port
 from openpoints.models.layers import furthest_point_sample
 
+def cal_model_parm_nums(model):
+    total = sum([param.nelement() for param in model.parameters()])
+    return total
 
+
+def count_param(model):
+    param_count = 0
+    for param in model.parameters():
+        param_count += param.view(-1).size()[0]
+    return param_count
 
 def batched_bincount(x, dim, max_value):
     target = torch.zeros(x.shape[0], max_value, dtype=x.dtype, device=x.device)
@@ -92,11 +101,18 @@ def main(gpu, cfg):
                                              split='train',
                                              distributed=cfg.distributed,)
 
-
+    from openpoints.models.pointmlp.pointMLP import pointMLP
+    from openpoints.models.curvenet.curvenet_seg import CurveNet
+    from openpoints.models.dgcnn.model import DGCNN_partseg
+    from openpoints.models.pct.pct import Point_Transformer_partseg
+    from openpoints.models.pointnet2.pointnet2_part_seg_msg import pointnet2
 
     if cfg.model.get('in_channels', None) is None:
         cfg.model.in_channels = cfg.model.encoder_args.in_channels
     model = build_model_from_cfg(cfg.model).cuda()
+
+
+
 
     if cfg.sync_bn:
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
@@ -106,39 +122,103 @@ def main(gpu, cfg):
         model = nn.parallel.DistributedDataParallel(
             model.cuda(), device_ids=[cfg.rank], output_device=cfg.rank)
         logging.info('Using Distributed Data parallel ...')
-    import numpy as np
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    pos = torch.randn(1,2048,3)
+   #  from openpoints.models.pointmlp.pointMLP import pointMLP
+   #  from openpoints.models.curvenet.curvenet_seg import CurveNet
+  #  model = pointMLP(3, 2048).to(device)  # partnums, points
+    #model = DGCNN_partseg().cuda()
+    #model = Point_Transformer_partseg().cuda()
+   # model = CurveNet().to(device)
+    #model  = pointnet2().cuda()
+
+    import numpy as np
+
+    optimal_batch_size  = 1
+    pos = torch.randn(optimal_batch_size, 2048, 3)
     pos = pos.to(device)
     #print(type(pos))
     from thop import clever_format
-    xvalue = torch.randn(1, 7, 2048)
+    xvalue = torch.rand(optimal_batch_size, 7, 2048)
+    #print(xvalue)
     xvalue = xvalue.to(device)
 
-    yvalue = np.array([1, 2048], dtype=np.int64)
+    yvalue = np.array([optimal_batch_size, 2048], dtype=np.int64)
     yvalue = torch.from_numpy(yvalue)
     #yvalue = torch.zeros(1, 2048)   #torch.randn(1,2048)
     yvalue = yvalue.to(device)
 
-    cls = np.array([[0]], dtype=np.int64)
+    cls = np.array([[0]*optimal_batch_size], dtype=np.int64).reshape((optimal_batch_size,1))
     cls = torch.from_numpy(cls)
     cls = cls.to(device)
 
     from thop import profile
+    model_size = cal_model_parm_nums(model)
+    logging.info(model)
+    logging.info('Number of params: %.4f M' % (model_size / 1e6))
 
     data = {'pos': pos,
             'x': xvalue,
             'y': yvalue,
             'cls': cls}
     model.eval()
-    import time
-    t_all = 0
-    for i in range(100):
-        t_start = time.time()
-        result = model(data)
-        t_end = time.time()
-        t_all += t_end - t_start
-    print(t_all)
+
+    label_one_hot = np.zeros((data['cls'].shape[0], 1))
+    for idx in range(data['cls'].shape[0]):
+        label_one_hot[idx, data['cls'][idx]] = 1
+    label_one_hot = torch.from_numpy(label_one_hot.astype(np.float32))
+    label_one_hot = label_one_hot.cuda()
+
+    ################# infer speed
+    for _ in range(50):
+        _ = model(data)
+
+    iterations = 300
+    starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    times = torch.zeros(iterations)  # 存储每轮iteration的时间
+    with torch.no_grad():
+        for iter in range(iterations):
+            starter.record()
+            _ = model(data)
+            ender.record()
+            # 同步GPU时间
+            torch.cuda.synchronize()
+            curr_time = starter.elapsed_time(ender)  # 计算时间
+            times[iter] = curr_time
+            #print(curr_time)
+
+    mean_time = times.mean().item()
+    print("Inference time: {:.6f}, FPS: {} ".format(mean_time, 1000 / mean_time))
+
+    ##########################
+
+    ################through put
+
+
+    # repetitions = 100
+    # total_time = 0
+    # with torch.no_grad():
+    #     for rep in range(repetitions):
+    #         starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+    #         starter.record()
+    #         _ = model(data)
+    #         ender.record()
+    #         torch.cuda.synchronize()
+    #         curr_time = starter.elapsed_time(ender) / 1000
+    #         total_time += curr_time
+    # Throughput = (repetitions * optimal_batch_size) / total_time
+    # print("FinalThroughput:", Throughput)
+
+
+
+
+
+
+
+
+    ##########################
+
+
 
 
 
@@ -170,8 +250,8 @@ def main(gpu, cfg):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser('ShapeNetPart Part segmentation training')
-    parser.add_argument('--cfg', type=str, default="D:/pythonproject/Pointnext/cfgs/shapenetpart/default.yaml", help='config file')
+    parser = argparse.ArgumentParser('ShapeNetPart Part segmentation training')         #pointnextmydatacfgs
+    parser.add_argument('--cfg', type=str, default="D:/pythonproject/Pointnext/cfgs/shapenetpart/pointnextmydatacfgs.yaml", help='config file')
     #args.cfg = "D:/pythonproject/Pointnext/cfgs/shapenetpart/default.yaml"
     args, opts = parser.parse_known_args()
     cfg = EasyConfig()

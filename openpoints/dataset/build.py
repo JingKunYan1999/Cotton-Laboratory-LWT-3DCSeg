@@ -75,6 +75,7 @@ def build_dataloader_from_cfg(batch_size,
     collate_fn = eval(collate_fn) if isinstance(collate_fn, str) else collate_fn
 
     shuffle = split == 'train'
+
     if distributed:
 
         sampler = torch.utils.data.distributed.DistributedSampler(dataset, shuffle=shuffle)

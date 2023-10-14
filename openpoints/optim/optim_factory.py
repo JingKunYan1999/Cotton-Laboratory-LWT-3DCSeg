@@ -202,6 +202,8 @@ def build_optimizer_from_cfg(
     else:
         parameters = model.parameters()
 
+    #parameters = [p for p in model.parameters() if p.requires_grad]  ###自己添加
+
     opt_lower = NAME.lower()
     opt_split = opt_lower.split('_')
     opt_lower = opt_split[-1]

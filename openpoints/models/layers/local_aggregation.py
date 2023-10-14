@@ -209,6 +209,8 @@ class ConvPool(nn.Module):
         Returns:
            output features of query points: [B, C_out, 3]
         """
+        #features = features.contiguous()
+        #print(features.shape)
         dp, fj = self.grouper(query_xyz, support_xyz, features)
 
         neighbor_dim = 3

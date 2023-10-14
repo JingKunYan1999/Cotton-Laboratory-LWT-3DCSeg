@@ -150,7 +150,7 @@ def main(gpu, cfg):
 
 
 
-    root = 'D:/pythonproject/Pointnext/data/ShapeNetPart/typeb_120_useddatasetxyz'
+    root = 'D:/pythonproject/Pointnext/data/ShapeNetPart/useddatasetxyz'
     numpoints = 2048
     batch_size = 8
     TEST_DATASET = ShapeNetPartNormal(data_root=root, num_points=numpoints, split='test',transform=cfg.datatransforms)
@@ -186,7 +186,7 @@ def main(gpu, cfg):
 
 
 
-    pretrained_path = r"D:\pythonproject\Pointnext\examples\shapenetpart\log\shapenetpart\typeb_120_83.78\checkpoint\ckpt_best.pth"
+    pretrained_path = r"D:\pythonproject\Pointnext\examples\shapenetpart\log\shapenetpart\81425616\checkpoint\ckpt_best.pth" #tempused
     load_checkpoint(model, pretrained_path=pretrained_path)
     validate_fn(model, testDataLoader, cfg,
                  num_votes=cfg.num_votes,

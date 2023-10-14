@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 from ..build import DATASETS
 from openpoints.models.layers import fps, furthest_point_sample
 os.environ["HDF5_USE_FILE_LOCKING"] = "FALSE"
-
+from openpoints.models.layers import create_grouper
 
 def download_shapenetpart(DATA_DIR):
     if not os.path.exists(DATA_DIR):
@@ -126,6 +126,25 @@ class ShapeNetPart(Dataset):
     def __len__(self):
         return self.data.shape[0]
 
+import open3d as o3d
+def point_cloud_normalize(cloud):
+    """
+    对点云数据进行归一化
+    :param cloud: 需要归一化的点云数据
+    :return: 归一化后的点云数据
+    """
+    centroid = cloud.get_center()  # 计算点云质心
+    points = np.asarray(cloud.points)
+    points = points - centroid     # 去质心
+    m = np.max(np.sqrt(np.sum(points ** 2, axis=1)))  # 计算点云中的点与坐标原点的最大距离
+    points = points / m  # 对点云进行缩放
+    normalize_cloud = o3d.geometry.PointCloud()  # 使用numpy生成点云
+    normalize_cloud.points = o3d.utility.Vector3dVector(points)
+
+   # normalize_cloud.colors = cloud.colors  # 获取投影前对应的颜色赋值给投影后的点
+    return normalize_cloud
+
+
 
 @DATASETS.register_module()
 class ShapeNetPartNormal(Dataset):
@@ -156,6 +175,8 @@ class ShapeNetPartNormal(Dataset):
                  sampler='fps', 
                  transform=None,
                  multihead=False,
+                 wi=0.45,
+                 is_newsample=False,
                  **kwargs
                  ):
         self.npoints = num_points
@@ -169,6 +190,10 @@ class ShapeNetPartNormal(Dataset):
         self.split = split
         self.multihead=multihead
         self.part_start = [0]
+        self.wi = wi
+        self.is_newsample = is_newsample
+
+
         with open(self.catfile, 'r') as f:
             for line in f:
                 ls = line.strip().split()
@@ -223,10 +248,15 @@ class ShapeNetPartNormal(Dataset):
         # presample
         filename = os.path.join(data_root, 'processed',
                                 f'{split}_{num_points}_fps.pkl')
+
         if presample and not os.path.exists(filename):
+           # print(11111111111)\
+           #  print(presample)
+           #  print(1111111111)
             np.random.seed(0)
             self.data, self.cls = [], []
             npoints = []
+            num_points = 2048
             for cat, filepath in tqdm(self.datapath, desc=f'Sample ShapeNetPart {split} split'):
                 cls = self.classes[cat]
                 cls = np.array([cls]).astype(np.int64)
@@ -250,32 +280,182 @@ class ShapeNetPartNormal(Dataset):
 
     def __getitem__(self, index):
         if not self.presample:
+
             fn = self.datapath[index]
             cat = self.datapath[index][0]
             cls = self.classes[cat]
             cls = np.array([cls]).astype(np.int64)
             data = np.loadtxt(fn[1]).astype(np.float32)
-            point_set = data[:, 0:6]
-            seg = data[:, -1].astype(np.int64)
+
+            #################
+            import open3d as o3d
+            temppcd = o3d.geometry.PointCloud()
+            temppcd.points = o3d.utility.Vector3dVector(data[:,:3])
+            temppcd = point_cloud_normalize(temppcd)
+            temppcd.estimate_normals(  # 计算法向量
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+            )
+            npp = np.asarray(temppcd.points)
+            npx = np.asarray(temppcd.normals)
+            data[:,:3] = npp
+            data[:,3:6] = npx
+            ###################
+
+            if 'train' in self.split:
+
+                if self.is_newsample:
+
+                    spikenums = int(
+                        self.npoints * self.wi if len(data[data[:, -1] == 1]) >= self.npoints * self.wi else len(
+                            data[data[:, -1] == 1]))
+                    spikedata = data[data[:, -1] == 1]
+                    leafdata = data[data[:, -1] == 0]
+                    if spikenums > 0:
+                        if spikenums < len(data[data[:, -1] == 1]):
+                            choice = np.random.choice(len(spikedata), spikenums, replace=True)
+                            samplespikedata = spikedata[choice]
+                            # samplespikedata = torch.from_numpy(spikedata).to(torch.float32).cuda().unsqueeze(0)
+                            # samplespikedata = fps(samplespikedata, spikenums).cpu().numpy()[0]
+                        else:
+                            samplespikedata = spikedata
+
+                        # print("spikenum",spikenums)
+                        # group_args = {'NAME': 'ballquery', 'radius_scaling':2.5,
+                        #              'radius': 2, 'nsample': 16, 'return_only_idx': True}
+                        group_args = {'NAME': 'knn', 'nsample': self.npoints // 8, 'return_only_idx': True}
+
+                        grouper = create_grouper(group_args)
+                        leafidx = \
+                        grouper(torch.from_numpy(samplespikedata[:, :3]).to(torch.float32).cuda().unsqueeze(0),
+                                torch.from_numpy(leafdata[:, :3]).to(torch.float32).cuda().unsqueeze(0)).cpu().numpy()[
+                            0]
+                        leafidx = leafidx.flatten()
+                        leafidx = np.unique(leafidx)
+                        knnleafdata = leafdata[leafidx, :]
+                        leafnums = int(
+                            (self.npoints - spikenums) if len(leafidx) > (self.npoints - spikenums) else len(leafidx))
+
+                        if leafnums < len(leafidx):
+                            choice = np.random.choice(len(knnleafdata), leafnums, replace=True)
+                            knnleafdata = knnleafdata[choice]
+                            # knnleafdata = torch.from_numpy(knnleafdata).to(torch.float32).cuda().unsqueeze(0)
+                            # knnleafdata = fps(knnleafdata, leafnums).cpu().numpy()[0]
+                            data = np.concatenate((samplespikedata, knnleafdata), axis=0)
+
+                        else:
+                            # knnleafdata = knnleafdata
+                            remaindernums = self.npoints - spikenums - leafnums
+                            if remaindernums > 0:
+                                remainderleafdata = np.delete(leafdata, leafidx, axis=0)
+                                choice = np.random.choice(len(remainderleafdata), remaindernums, replace=True)
+                                remainderleafdata = remainderleafdata[choice]
+                                # remainderleafdata = torch.from_numpy(remainderleafdata).to(
+                                #     torch.float32).cuda().unsqueeze(
+                                #     0)
+                                # remainderleafdata = fps(remainderleafdata, remaindernums).cpu().numpy()[0]
+                                data = np.concatenate((samplespikedata, knnleafdata, remainderleafdata), axis=0)
+                            else:
+                                data = np.concatenate((samplespikedata, knnleafdata), axis=0)
+                    else:
+                        np.random.seed(0)
+                        choice = np.random.choice(len(data), self.npoints, replace=True)  # self.npoints
+                        data = data[choice]
+
+
+                    #print(len(data))
+                    point_set = data[:, 0:6]
+                    seg = data[:, -1].astype(np.int64)
+                   # print(len(data[data[:,-1]==1])/len(data))
+
+
+
+
+
+
+                else:
+
+                    np.random.seed(0)
+                    # point_set = data[:, 0:6]
+                    # seg = data[:, -1].astype(np.int64)
+
+                    if len(data) != self.npoints:
+                        data = torch.from_numpy(data).to(
+                            torch.float32).cuda().unsqueeze(0)
+                        data = fps(data, self.npoints).cpu().numpy()[0]
+
+                    choice = np.random.choice(len(data), self.npoints, replace=True)  # self.npoints
+                    data = data[choice]
+                    point_set = data[:, 0:6]
+                    seg = data[:, -1].astype(np.int64)
+                    # point_set = point_set[choice]
+                    # seg = seg[choice]
+
+            else:
+                if len(data) != self.npoints:
+                    data = torch.from_numpy(data).to(
+                        torch.float32).cuda().unsqueeze(0)
+                    data = fps(data, self.npoints).cpu().numpy()[0]
+
+
+                # choice = np.random.choice(len(data), self.npoints, replace=True)  # self.npoints
+                # data = data[choice]
+
+                point_set = data[:, 0:6]
+                seg = data[:, -1].astype(np.int64)
+
+            # if len(data) != 2048:
+            #     data = torch.from_numpy(data).to(
+            #         torch.float32).cuda().unsqueeze(0)
+            #     data = fps(data, self.npoints).cpu().numpy()[0]
+                # choice = np.random.choice(len(data), 2048, replace=True)  # self.npoints
+                # data = data[choice]
+            #
+            # point_set = data[:, 0:6]
+            # seg = data[:, -1].astype(np.int64)
         else:
             data, cls = self.data[index], self.cls[index]
             point_set, seg = data[:, :6], data[:, 6].astype(np.int64)
 
-        if 'train' in self.split:
-            choice = np.random.choice(len(seg), self.npoints, replace=True)
-            point_set = point_set[choice]
-            seg = seg[choice]
-        else:
-            point_set = point_set[:self.npoints]
-            seg = seg[:self.npoints]
+
+
+        # if 'train' in self.split:
+        #
+        #     np.random.seed(0)
+        #     data = torch.from_numpy(data).to(
+        #         torch.float32).cuda().unsqueeze(0)
+        #     data = fps(data, self.npoints).cpu().numpy()[0]  # self.npoints
+        #     point_set = data[:, 0:6]
+        #     seg = data[:, -1].astype(np.int64)
+        #
+        #     choice = np.random.choice(len(seg), self.npoints , replace=True)  #self.npoints
+        #     point_set = point_set[choice]
+        #     seg = seg[choice]
+        # else:
+        #     point_set = point_set[:self.npoints]
+        #     seg = seg[:self.npoints]
+
         if self.multihead:
             seg=seg-self.part_start[cls[0]]
 
+
+        # data = {
+        #     'points': point_set[:, 0:3],
+        #     'seg_id': seg,
+        #     'cls_tokens': cls,
+        #     'norms': point_set[:, 3:6]
+        # }
+
+
+        #######pointnext and pointnet2
         data = {'pos': point_set[:, 0:3],
                 'x': point_set[:, 3:6],
                 'cls': cls,
                 'y': seg}
+        ###############################
 
+        # data = {'pos': point_set,
+        #         'cls': cls,
+        #         'y': seg}
 
         """debug 
         from openpoints.dataset import vis_multi_points
@@ -287,6 +467,7 @@ class ShapeNetPartNormal(Dataset):
         """
         if self.transform is not None:
             data = self.transform(data)
+
         return data
 
     def __len__(self):

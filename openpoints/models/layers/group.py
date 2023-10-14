@@ -86,6 +86,8 @@ class GroupingOperation(Function):
         :return:
             output: (B, C, npoint, nsample) tensor
         """
+
+
         assert features.is_contiguous()
         assert idx.is_contiguous()
 
@@ -243,7 +245,7 @@ class QueryAndGroup(nn.Module):
             new_features: (B, 3 + C, npoint, nsample)
         """
         idx = ball_query(self.radius, self.nsample, support_xyz, query_xyz)
-
+        #print(idx.shape)
         if self.return_only_idx:
             return idx
         xyz_trans = support_xyz.transpose(1, 2).contiguous()
@@ -321,7 +323,10 @@ class KNNGroup(nn.Module):
             return grouped_xyz, None
 
 
-def get_aggregation_feautres(p, dp, f, fj, feature_type='dp_fj'):
+def get_aggregation_feautres(p, dp, f, fj, feature_type='dp_fj'): # p 为newp f为fi
+
+    #feature_type = 'dp_df_f'
+
     if feature_type == 'dp_fj':
         fj = torch.cat([dp, fj], 1)
     elif feature_type == 'dp_fj_df':
@@ -333,6 +338,11 @@ def get_aggregation_feautres(p, dp, f, fj, feature_type='dp_fj'):
     elif feature_type == 'dp_df':
         df = fj - f.unsqueeze(-1)
         fj = torch.cat([dp, df], 1)
+
+    #newly added
+    elif feature_type == 'dp_df_f':
+        df = fj - f.unsqueeze(-1)
+        fj = torch.cat([dp, df, f.unsqueeze(-1).expand(-1, -1, -1, df.shape[-1])], 1)
     return fj
 
 
@@ -342,7 +352,7 @@ def create_grouper(group_args):
     radius = group_args_copy.pop('radius', 0.1)
     nsample = group_args_copy.pop('nsample', 20)
 
-    logging.info(group_args)
+   # logging.info(group_args)
     if nsample is not None:
         if method == 'ballquery':
             grouper = QueryAndGroup(radius, nsample, **group_args_copy)

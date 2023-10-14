@@ -1,0 +1,3 @@
+1.更改dataset中 shapenetpart
+2.更改cfg中的配置文件
+3.在main文件中下更改配置文件路径

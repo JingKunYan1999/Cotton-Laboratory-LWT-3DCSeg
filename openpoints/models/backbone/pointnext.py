@@ -99,6 +99,7 @@ class SetAbstraction(nn.Module):
                  feature_type='dp_fj',
                  use_res=False,
                  is_head=False,
+                 isusenew_feature_type=False,
                  **kwargs, 
                  ):
         super().__init__()
@@ -110,11 +111,34 @@ class SetAbstraction(nn.Module):
 
         self.choosein_channels = in_channels
 
+        self.isusenew_feature_type = isusenew_feature_type
 
-        mid_channel = out_channels // 2 if stride > 1 else out_channels
-        channels = [in_channels] + [mid_channel] * \
-                   (layers - 1) + [out_channels]
-        channels[0] = in_channels if is_head else CHANNEL_MAP[feature_type](channels[0])
+
+
+        # if self.isusenew_feature_type and not self.is_head:
+        #     out_channels = out_channels * 2
+        #     if in_channels != 32:
+        #         in_channels = in_channels * 2
+
+        if self.isusenew_feature_type and not self.is_head:
+            mid_channel = out_channels if stride > 1 else out_channels
+        else:
+            mid_channel = out_channels // 2 if stride > 1 else out_channels
+
+       # print("mid_channel",mid_channel)
+        if self.isusenew_feature_type and not self.is_head:
+            channels = [in_channels] + [mid_channel] * \
+                       (layers - 1) + [out_channels]
+        else:
+            channels = [in_channels] + [mid_channel] * \
+                       (layers - 1) + [out_channels]
+
+        if self.isusenew_feature_type and not self.is_head:
+            channels[0] = in_channels * 2 + 3
+        else:
+            channels[0] = in_channels if is_head else CHANNEL_MAP[feature_type](channels[0])
+
+
 
         if self.use_res:
             self.skipconv = create_convblock1d(
@@ -124,9 +148,9 @@ class SetAbstraction(nn.Module):
 
         # actually, one can use local aggregation layer to replace the following
         #####是否使用simam
-        create_conv = create_convblock1d if is_head else create_convblock2d_withsimam         #create_convblock2d    #create_convblock2d_withsimam  #create_convblock2d
+        create_conv = create_convblock1d if is_head else create_convblock2d  #create_convblock2d_withsimam   #create_convblock2d    #create_convblock2d_withsimam         #create_convblock2d    #create_convblock2d_withsimam  #create_convblock2d
         #use simam or not
-
+        #print("self.convs",channels)
         convs = []
         for i in range(len(channels) - 1):
             convs.append(create_conv(channels[i], channels[i + 1],
@@ -142,14 +166,17 @@ class SetAbstraction(nn.Module):
                 group_args.radius = None
             self.grouper = create_grouper(group_args)
             self.pool = lambda x: torch.max(x, dim=-1, keepdim=False)[0]
+
             if sampler.lower() == 'fps':
                 self.sample_fn = furthest_point_sample
+
             elif sampler.lower() == 'random':
                 self.sample_fn = random_sample
 
 
         #######倒瓶颈结构
-        if not self.is_head and (self.choosein_channels == 32 or self.choosein_channels == 64):
+        if not self.is_head and (self.choosein_channels == 32 or self.choosein_channels == 64 or self.choosein_channels == 128 ):  #or self.choosein_channels == 64
+        #if not self.is_head:
             expansion = 2
             mid_channels = int(channels[-1] * expansion)
             inveschannels = [channels[-1], mid_channels, channels[-1]]
@@ -176,7 +203,11 @@ class SetAbstraction(nn.Module):
         else:
             if not self.all_aggr:
                 idx = self.sample_fn(p, p.shape[1] // self.stride).long()
+
+               # print(len(idx))
+
                 new_p = torch.gather(p, 1, idx.unsqueeze(-1).expand(-1, -1, 3))
+                #print(new_p.shape)
             else:
                 new_p = p
             """ DEBUG neighbor numbers. 
@@ -190,28 +221,42 @@ class SetAbstraction(nn.Module):
                 fi = torch.gather(
                     f, -1, idx.unsqueeze(1).expand(-1, f.shape[1], -1))
                 if self.use_res:
+                    #print(fi.shape)
                     identity = self.skipconv(fi)
             else:
                 fi = None
-            dp, fj = self.grouper(new_p, p, f)
-            fj = get_aggregation_feautres(new_p, dp, fi, fj, feature_type=self.feature_type)
-            #fj.shape B D S K  S为采样点数  K为邻近点数
 
+            dp, fj = self.grouper(new_p, p, f)  #fj  groupinh feature 32 knn
+
+           # print(fj.shape)
+            if self.isusenew_feature_type:
+                fj = get_aggregation_feautres(new_p, dp, fi, fj, feature_type='dp_df_f')
+            else:
+                fj = get_aggregation_feautres(new_p, dp, fi, fj, feature_type=self.feature_type)
+            #fj.shape B D S K  S为采样点数  K为邻近点数
+            #print(fj.shape)
             # temp = self.convs(fj)
             # print(temp.shape)
             # f = self.pool(temp)
 
             f = self.pool(self.convs(fj))
 
-            ###倒瓶颈结构
-            if not self.is_head and (self.choosein_channels == 32 or self.choosein_channels == 64):
+            ##倒瓶颈结构
+            if not self.is_head and (self.choosein_channels == 32 or self.choosein_channels == 64 or self.choosein_channels == 128):
+            #if not self.is_head:
                 f = self.pwconv(f)
-                if f.shape[-1] == identity.shape[-1] and self.use_res:
+                if self.use_res and f.shape[-1] == identity.shape[-1]:
                     f = self.act(f + identity)
+                else:
+                    f = self.act(f)
 
             else:
                 if self.use_res:
                     f = self.act(f + identity)
+            ##倒瓶颈结构
+
+            # if self.use_res:
+            #     f = self.act(f + identity)
 
             p = new_p
 
@@ -404,7 +449,9 @@ class PointNextEncoder(nn.Module):
                  **kwargs
                  ):
         super().__init__()
+       # block = "SetAbstraction"
         if isinstance(block, str):
+           # print(block)
             block = eval(block)
         self.blocks = blocks
         self.strides = strides
@@ -631,14 +678,19 @@ class PointNextPartDecoder(nn.Module):
             self.cls2partembed = cls2partembed
 
         n_decoder_stages = len(fp_channels)
+
+
         decoder = [[] for _ in range(n_decoder_stages)]
-        for i in range(-1, -n_decoder_stages - 1, -1):
+
+
+        for i in range(-1, -n_decoder_stages-1, -1):
             group_args.radius = self.radii[i]
             group_args.nsample = self.nsample[i]
             decoder[i] = self._make_dec(
                 skip_channels[i], fp_channels[i], group_args=group_args, block=block, blocks=self.blocks[i])
 
         self.decoder = nn.Sequential(*decoder)
+
         self.out_channels = fp_channels[-n_decoder_stages]
 
     def _make_dec(self, skip_channels, fp_channels, group_args=None, block=None, blocks=1):
@@ -649,6 +701,8 @@ class PointNextPartDecoder(nn.Module):
               [fp_channels] * self.decoder_layers
         layers.append(FeaturePropogation(mlp, act_args=self.act_args))
         self.in_channels = fp_channels
+
+
         for i in range(1, blocks):
             group_args.radius = radii[i]
             group_args.nsample = nsample[i]
@@ -658,6 +712,7 @@ class PointNextPartDecoder(nn.Module):
                                 conv_args=self.conv_args, expansion=self.expansion,
                                 use_res=self.use_res
                                 ))
+
         return nn.Sequential(*layers)
 
     def _to_full_list(self, param, param_scaling=1):
